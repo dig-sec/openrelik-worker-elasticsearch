@@ -1,0 +1,1 @@
+"""OpenRelik Elasticsearch worker."""
