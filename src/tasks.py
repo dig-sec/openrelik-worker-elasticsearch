@@ -33,24 +33,131 @@ TASK_METADATA = {
             "description": "If unchecked, each line is indexed as plain text.",
             "type": "checkbox",
             "required": False,
+            "default_value": True,
+        },
+        {
+            "name": "elasticsearch_url",
+            "label": "Elasticsearch URL",
+            "description": (
+                "Optional Elasticsearch instance URL " "(overrides ELASTICSEARCH_URL)."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "auth_mode",
+            "label": "Auth mode",
+            "description": (
+                "Optional auth mode: none | api_key | basic. If empty, "
+                "worker auto-detects from provided credentials."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "api_key",
+            "label": "Elasticsearch API key",
+            "description": (
+                "Optional API key for auth_mode=api_key "
+                "(overrides ELASTICSEARCH_API_KEY)."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "username",
+            "label": "Elasticsearch username",
+            "description": (
+                "Optional username for auth_mode=basic "
+                "(overrides ELASTICSEARCH_USERNAME)."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "password",
+            "label": "Elasticsearch password",
+            "description": (
+                "Optional password for auth_mode=basic "
+                "(overrides ELASTICSEARCH_PASSWORD)."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "verify_certs",
+            "label": "Verify TLS certificates",
+            "description": "Enable TLS certificate verification (default: true).",
+            "type": "checkbox",
+            "required": False,
+            "default_value": True,
         },
     ],
 }
 
 
-def _build_es_client() -> Elasticsearch:
-    es_url = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
-    api_key = os.getenv("ELASTICSEARCH_API_KEY")
-    username = os.getenv("ELASTICSEARCH_USERNAME")
-    password = os.getenv("ELASTICSEARCH_PASSWORD")
+def _to_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
 
+
+def _build_es_client(task_config: dict[str, Any]) -> Elasticsearch:
+    es_url = (
+        task_config.get("elasticsearch_url")
+        or os.getenv("ELASTICSEARCH_URL")
+        or "http://elasticsearch:9200"
+    )
+    api_key = task_config.get("api_key") or os.getenv("ELASTICSEARCH_API_KEY")
+    username = task_config.get("username") or os.getenv("ELASTICSEARCH_USERNAME")
+    password = task_config.get("password") or os.getenv("ELASTICSEARCH_PASSWORD")
+    verify_certs = _to_bool(
+        task_config.get("verify_certs", os.getenv("ELASTICSEARCH_VERIFY_CERTS")),
+        default=True,
+    )
+    auth_mode = (task_config.get("auth_mode") or "").strip().lower()
+
+    client_kwargs: dict[str, Any] = {"verify_certs": verify_certs}
+
+    if auth_mode and auth_mode not in {"none", "api_key", "basic"}:
+        raise RuntimeError("task_config.auth_mode must be one of: none, api_key, basic")
+
+    if auth_mode == "api_key":
+        if not api_key:
+            raise RuntimeError(
+                "task_config.api_key (or ELASTICSEARCH_API_KEY) "
+                "is required for auth_mode=api_key"
+            )
+        client_kwargs["api_key"] = api_key
+        return Elasticsearch(es_url, **client_kwargs)
+
+    if auth_mode == "basic":
+        if not (username and password):
+            raise RuntimeError(
+                "task_config.username/task_config.password (or ELASTICSEARCH_USERNAME/ELASTICSEARCH_PASSWORD) "
+                "are required for auth_mode=basic"
+            )
+        client_kwargs["basic_auth"] = (username, password)
+        return Elasticsearch(es_url, **client_kwargs)
+
+    # Auto-detect auth when auth_mode is omitted.
     if api_key:
-        return Elasticsearch(es_url, api_key=api_key)
+        client_kwargs["api_key"] = api_key
+        return Elasticsearch(es_url, **client_kwargs)
 
     if username and password:
-        return Elasticsearch(es_url, basic_auth=(username, password))
+        client_kwargs["basic_auth"] = (username, password)
+        return Elasticsearch(es_url, **client_kwargs)
 
-    return Elasticsearch(es_url)
+    return Elasticsearch(es_url, **client_kwargs)
 
 
 def _normalize_document(raw: str, parse_json_lines: bool) -> dict[str, Any]:
@@ -83,9 +190,9 @@ def export(
         raise RuntimeError("task_config.index_name is required")
 
     id_field = task_config.get("id_field")
-    parse_json_lines = task_config.get("parse_json_lines", True)
+    parse_json_lines = _to_bool(task_config.get("parse_json_lines"), default=True)
 
-    client = _build_es_client()
+    client = _build_es_client(task_config)
 
     indexed_documents = 0
     skipped_lines = 0
