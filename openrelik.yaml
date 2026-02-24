@@ -1,0 +1,9 @@
+publish: true
+
+display_name: Elasticsearch
+description: Export workflow worker results into an Elasticsearch index.
+
+tools:
+  - display_name: Elasticsearch
+    description: Search and analytics engine for indexed worker output
+    url: https://www.elastic.co/elasticsearch
